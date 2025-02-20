@@ -13,11 +13,6 @@ The stages are fetch, decode, execute, memory, writeback
 
 */
 
-`include "base.sv"
-`include "system.sv"
-`include "memory_io.sv"
-
-
 module core(
     input logic       clk
     ,input logic      reset
@@ -81,17 +76,26 @@ bool     is_memory_op;
 
 word    reg_file[0:31];
 
-always_comb begin
-    rs1 = decode_rs1(fetched_instruction);
-    rs2 = decode_rs2(fetched_instruction);
-    wbs = decode_rd(fetched_instruction);
-    f3 = decode_funct3(fetched_instruction);
-    op_q = decode_opcode_q(fetched_instruction);
-    format = decode_format(op_q);
-    imm = decode_imm(fetched_instruction, format);
-    wbv = decode_writeback(op_q);
-    f7 = decode_funct7(fetched_instruction, format);
-end
+
+assign rs1_wire = fetched_instruction[19:15];
+assign rs2_wire = fetched_instruction[24:20];
+assign rd_wire = fetched_instruction[11:7];
+assign funct3_wire = fetched_instruction[14:12];
+assign opcode_wire = fetched_instruction[6:0];
+assign funct7_wire = fetched_instruction[31:25];
+
+assign rs1 = rs1_wire;
+assign rs2 = rs2_wire;
+assign wbs = rd_wire;
+assign f3 = funct3'(funct3_wire);
+assign op_q = decode_opcode_q(opcode_wire);
+assign format = decode_format(opcode_wire, op_q);
+assign imm = decode_imm(fetched_instruction, format);
+assign wbv = decode_writeback(op_q);
+assign f7 = funct7_wire;
+
+
+
 
 logic read_reg_valid;
 logic write_reg_valid;
@@ -106,15 +110,14 @@ always_ff @(posedge clk) begin
 end
 
 logic memory_stage_complete;
-always_comb begin
-    if (op_q == q_load || op_q == q_store) begin
-        if (data_mem_rsp.valid)
-            memory_stage_complete = true;
-        else
-            memory_stage_complete = false;
+always @(*) begin
+    if (op_q == 7'b0000011 || op_q == 7'b0100011) begin // q_load or q_store
+        memory_stage_complete = data_mem_rsp.valid;
     end else
-        memory_stage_complete = true;
+        memory_stage_complete = 1'b1;
 end
+
+
 
 always_comb begin
     read_reg_valid = false;
@@ -147,8 +150,15 @@ end
 
 ext_operand exec_result_comb;
 word next_pc_comb;
-always_comb begin
-    exec_result_comb = execute(
+
+logic branch_taken;
+word branch_target;
+
+// moved to outside always comb block
+
+ext_operand exec_result_wire;
+
+assign exec_result_comb = execute(
         cast_to_ext_operand(rd1),
         cast_to_ext_operand(rd2),
         cast_to_ext_operand(imm),
@@ -156,7 +166,29 @@ always_comb begin
         op_q,
         f3,
         f7);
-    next_pc_comb = pc + 4;
+
+
+// Modified always_comb block
+always_comb begin
+    
+    // Handle branching and jumping
+    branch_taken = 1'b0;
+    branch_target = pc + 4;
+    
+    case (op_q)
+        q_branch: begin
+            branch_taken = branch_condition(f3, rd1, rd2);
+            branch_target = branch_taken ? (pc + imm) : (pc + 4);
+            next_pc_comb = branch_target;
+        end
+        q_jal: begin
+            next_pc_comb = pc + imm;
+        end
+        q_jalr: begin
+            next_pc_comb = (rd1 + imm) & ~32'b1;
+        end
+        default: next_pc_comb = pc + 4;
+    endcase
 end
 
 word exec_result;
@@ -168,36 +200,30 @@ always_ff @(posedge clk) begin
     end
 end
 
+
 /*
 
   Stage and mem
 
  */
 
-always_comb begin
-    /*
-    data_mem_req.valid = false;
-    data_mem_req.do_read = {(`word_address_size/8){1'b0}};
-    data_mem_req.do_write = {(`word_address_size/8){1'b0}};
-    data_mem_req.addr = {(`word_address_size){1'b0}};
-    data_mem_req.data = {(`word_size){1'b0}};
-    */
-    // This effectively does the above.  The above is there for documentation
+always@(*) begin
     data_mem_req = memory_io_no_req32;
 
-    if (data_mem_rsp.ready && current_stage == stage_mem && (op_q == q_store || op_q == q_load)) begin
+    if (data_mem_rsp.ready && current_stage == stage_mem && (op_q == 7'b0100011 || op_q == 7'b0000011)) begin // q_store or q_load
         data_mem_req.addr = exec_result[`word_address_size - 1:0];
-        if (op_q == q_store) begin
+        if (op_q == 7'b0100011) begin // q_store
             data_mem_req.valid = true;
-            data_mem_req.do_write = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result);
-            data_mem_req.data = shuffle_store_data(rd2, exec_result);
+            data_mem_req.do_write = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result); //line 222
+            data_mem_req.data = shuffle_store_data(rd2, exec_result); // line 223
         end else
-        if (op_q == q_load) begin
+        if (op_q == 7'b0000011) begin // q_load
             data_mem_req.valid = true;
-            data_mem_req.do_read = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result);
+            data_mem_req.do_read = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result); // line 227
         end
     end
 end
+
 
 word load_result;
 always_ff @(posedge clk) begin
@@ -205,16 +231,25 @@ always_ff @(posedge clk) begin
         load_result <= data_mem_rsp.data;
 end
 
-always_comb begin
-    if (op_q == q_load)
-        wbd = subset_load_data(
-                    shuffle_load_data(data_mem_rsp.valid ? data_mem_rsp.data : load_result, exec_result),
-                    cast_to_memory_op(f3));
-    else
-        wbd = exec_result;
+// Define this outside the always_comb block if not already defined
+localparam opcode_q_load = 7'b0000011;
 
+always_comb begin
+    if (op_q == opcode_q_load) begin
+        logic [31:0] loaded_data = data_mem_rsp.valid ? data_mem_rsp.data : load_result;
+        wbd = subset_load_data(
+            loaded_data,
+            f3,  // Assuming f3 is the funct3 field from the instruction
+            exec_result[1:0]  // Using the lower 2 bits of exec_result as the address offset
+        );
+    end else
+        wbd = exec_result;
 end
 
+
+
+
+// writeback
 word instruction_count /*verilator public*/;
 always_ff @(posedge clk) begin
     if (reset) begin
@@ -222,12 +257,15 @@ always_ff @(posedge clk) begin
         instruction_count <= 0;
     end else begin
         if (current_stage == stage_writeback) begin
-            pc <= next_pc;
+            case (op_q)
+                q_branch, q_jal, q_jalr: pc <= next_pc;
+                default: pc <= pc + 4;
+            endcase
             instruction_count <= instruction_count + 1;
-
         end
     end
 end
+
 
 /*
 
@@ -256,6 +294,5 @@ always_ff @(posedge clk) begin
         endcase
     end
 end
-
 endmodule
 `endif

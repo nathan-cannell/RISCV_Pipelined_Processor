@@ -14,6 +14,14 @@ typedef logic signed [`word_size:0]         ext_operand;
 typedef logic [`word_size - 1:0]            operand;
 typedef logic [`word_address_size - 1:0]    word_address;
 
+//fix unable to bind to wire error
+localparam funct3_beq  = 3'b000;
+localparam funct3_bne  = 3'b001;
+localparam funct3_blt  = 3'b100;
+localparam funct3_bge  = 3'b101;
+localparam funct3_bltu = 3'b110;
+localparam funct3_bgeu = 3'b111;
+
 typedef enum {
      r_format = 0
     ,i_format
@@ -48,7 +56,7 @@ typedef enum logic [2:0] {
     funct3_and    = 3'b111
 } funct3;
 
-function automatic opcode_q decode_opcode_q(instr32 instr);
+function automatic opcode_q decode_opcode_q(logic [6:0] instr);
     case (instr[6:0])
         7'b0000011:   return opcode_load;
         7'b0100011:  return opcode_store;
@@ -64,7 +72,7 @@ function automatic opcode_q decode_opcode_q(instr32 instr);
     endcase
 endfunction
 
-function automatic instr_format decode_format(instr32 instr, opcode_q op_q);
+function automatic instr_format decode_format(logic [6:0] instr, opcode_q op_q);
     case (op_q)
         opcode_load:  return i_format;
         opcode_store: return s_format;
@@ -79,7 +87,7 @@ function automatic instr_format decode_format(instr32 instr, opcode_q op_q);
     endcase
 endfunction
 
-function automatic funct7 decode_funct7(instr32 instr, instr_format format);
+function automatic funct7 decode_funct7(logic [6:0] instr, instr_format format);
     if (format == r_format || format == i_format)
         return instr[31:25];
     return 7'd0;
@@ -95,6 +103,7 @@ function automatic ext_operand execute(
     ,funct7      f7);
     ext_operand result;
     ext_operand operand1, operand2;
+    logic branch_taken;
 
     operand1 = (op_q == q_auipc)
         ? { 1'b0, pc } : rd1;
@@ -111,10 +120,10 @@ function automatic ext_operand execute(
                         result = operand1 + operand2;
                     else
                         result = f7_mod(f7) ? (operand1 - operand2) : (operand1 + operand2);
-                funct3_slt:     result = (operand1 < operand2) ? 1 : 0;
-                funct3_sltu:    result = { 1'b0, operand1[`word_size-1:0] } < { 1'b0, operand2[`word_size-1:0] } ? 1 : 0;
-                funct3_sll:     result = operand1 << operand2[5:0];
-                funct3_srl:    result = f7_mod(f7) ? (operand1 >>> operand2[5:0]) : { 1'b0, operand1[`word_size-1:0] } >> operand2[5:0];
+                funct3_slt:     result = ($signed(operand1) < $signed(operand2)) ? 1 : 0;
+                funct3_sltu:    result = (operand1 < operand2) ? 1 : 0;
+                funct3_sll:     result = operand1 << operand2[4:0];
+                funct3_srl:     result = f7_mod(f7) ? ($signed(operand1) >>> operand2[4:0]) : (operand1 >> operand2[4:0]);
                 funct3_xor:     result = operand1 ^ operand2;
                 funct3_or:      result = operand1 | operand2;
                 funct3_and:     result = operand1 & operand2;
@@ -124,6 +133,29 @@ function automatic ext_operand execute(
                 end
             endcase
         end
+        q_branch: begin
+            case (f3)
+                funct3_beq:  branch_taken = (operand1 == operand2); // Error line 130
+                funct3_bne:  branch_taken = (operand1 != operand2); // error cont.
+                funct3_blt:  branch_taken = ($signed(operand1) < $signed(operand2)); // error cont.
+                funct3_bge:  branch_taken = ($signed(operand1) >= $signed(operand2)); // error cont.
+                funct3_bltu: branch_taken = (operand1 < operand2); // error cont.
+                funct3_bgeu: branch_taken = (operand1 >= operand2); // Error Line 135
+                default: begin
+                    $display("Unimplemented branch f3: %x", f3);
+                    branch_taken = 0;
+                end
+            endcase
+            result = branch_taken ? (pc + imm) : (pc + 4);
+        end
+        q_jal: begin
+            result = pc + 4;  // Return address
+            pc = pc + imm;    // Jump target
+        end
+        q_jalr: begin
+            result = pc + 4;  // Return address
+            pc = (operand1 + imm) & ~1;  // Jump target, least significant bit set to 0
+        end
         default: begin
             $display("Should never get here: pc=%x op=%b", pc, op_q);
             result = 0;
@@ -132,7 +164,7 @@ function automatic ext_operand execute(
     return result;
 endfunction
 
-function automatic tag decode_rs2(instr32 instr);
+function automatic tag decode_rs2(logic [4:0] instr);
     return instr[24:20];
 endfunction
 
@@ -140,15 +172,15 @@ function automatic shamt decode_shamt(instr32 instr);
     return instr[24:20];
 endfunction
 
-function automatic tag decode_rs1(instr32 instr);
+function automatic tag decode_rs1(logic [4:0] instr);
     return instr[19:15];
 endfunction
 
-function automatic tag decode_rd(instr32 instr);
+function automatic tag decode_rd(logic [4:0] instr);
     return instr[11:7];
 endfunction
 
-function automatic funct3 decode_funct3(instr32 instr);
+function automatic funct3 decode_funct3(logic [2:0] instr);
     return funct3'(instr[14:12]);
 endfunction
 
@@ -194,3 +226,17 @@ function automatic bool is_over_or_under(ext_operand in);
 endfunction
 
 `endif
+
+
+// Helper function for branch condition
+function automatic logic branch_condition(logic [2:0] f3, word rd1, word rd2);
+    case (f3)
+        funct3_beq:  return (rd1 == rd2);
+        funct3_bne:  return (rd1 != rd2);
+        funct3_blt:  return ($signed(rd1) < $signed(rd2));
+        funct3_bge:  return ($signed(rd1) >= $signed(rd2));
+        funct3_bltu: return (rd1 < rd2);
+        funct3_bgeu: return (rd1 >= rd2);
+        default:     return 1'b0;
+    endcase
+endfunction
