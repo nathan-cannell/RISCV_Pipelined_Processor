@@ -142,6 +142,11 @@ always_ff @(posedge clk) begin
 end
 
 logic memory_stage_complete;
+word memory_writeback_wbd;
+tag  memory_writeback_wbs;
+logic memory_writeback_wbv;
+opcode_q memory_writeback_op_q;
+
 always @(*) begin
     if (op_q == q_load || op_q == q_store) begin
         if (data_mem_rsp.valid)
@@ -151,6 +156,8 @@ always @(*) begin
     end else
         memory_stage_complete = true;
 end
+logic memory_writeback_valid;
+
 
 always @(*) begin
     read_reg_valid = false;
@@ -159,10 +166,15 @@ always @(*) begin
         read_reg_valid = true;
     end
 
-    if (memory_stage_complete && current_stage == stage_writeback && wbv) begin
+    //if (memory_stage_complete && current_stage == stage_writeback && wbv) begin // OLD
+    if (memory_stage_complete && memory_writeback_valid && wbv) begin // NEW
         write_reg_valid = true;
+        wbd = memory_writeback_wbd;
+        wbs = memory_writeback_wbs;
+
     end
 end
+
 
 /*
    Pipeline Register: Decode/Execute
@@ -360,12 +372,7 @@ end
 
 */
 
-word memory_writeback_wbd;
-tag  memory_writeback_wbs;
-logic memory_writeback_wbv;
-opcode_q memory_writeback_op_q;
 
-logic memory_writeback_valid;
 
 always_ff @(posedge clk) begin
   if (reset) begin
