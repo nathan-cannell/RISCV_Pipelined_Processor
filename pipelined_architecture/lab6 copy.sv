@@ -24,36 +24,6 @@ typedef struct packed {
     riscv::word pc;
 } fetched_instruction_t;
 
-module hazard_detection_unit(
-    input logic [4:0] rs1_id, rs2_id, rd_ex, rd_mem,
-    input logic reg_write_ex, reg_write_mem,
-    output logic stall
-);
-    always_comb begin
-        if ((rs1_id == rd_ex && reg_write_ex) || (rs1_id == rd_mem && reg_file_bypass_in.valid && reg_file_bypass_in.rs == rs1_id)) begin
-            stall = 1'b1;
-        end else if ((rs2_id == rd_ex && reg_write_ex) || (rs2_id == rd_mem && reg_file_bypass_in.valid && reg_file_bypass_in.rs == rs2_id)) begin
-            stall = 1'b1;
-        end else begin
-            stall = 1'b0;
-        end
-    end
-endmodule
-
-module control_hazard_unit(
-    input logic branch_taken_ex,
-    input logic predicted_not_taken,
-    output logic flush_pipeline
-);
-    always_comb begin
-        if (branch_taken_ex && predicted_not_taken) begin
-            flush_pipeline = 1'b1;
-        end else begin
-            flush_pipeline = 1'b0;
-        end
-    end
-endmodule
-
 
 module fetch(
     input logic       clk
@@ -348,13 +318,35 @@ word next_pc_comb;
 word exec_bypassed_rd1_comb;
 word exec_bypassed_rd2_comb;
 
-always @(*) begin
-    word rd1;
-    word rd2;
+// added forwarding
+always_comb begin
+    word rd1, rd2;
 
-    // TODO: Implement bypass logic
-    rd1 = ((decoded_instruction_in.rs1 == 5'd0) ? `word_size'd0 : decoded_instruction_in.rd1);
-    rd2 = ((decoded_instruction_in.rs2 == 5'd0) ? `word_size'd0 : decoded_instruction_in.rd2);
+    // Default values from decode stage
+    rd1 = (decoded_instruction_in.rs1 == 5'd0) ? '0 : decoded_instruction_in.rd1;
+    rd2 = (decoded_instruction_in.rs2 == 5'd0) ? '0 : decoded_instruction_in.rd2;
+
+    // Forward from Execute stage (EX → EX)
+    if (executed_instruction_in.valid &&
+        executed_instruction_in.writeback_instruction.wbv &&
+        executed_instruction_in.writeback_instruction.wbs != 0 &&
+        executed_instruction_in.writeback_instruction.wbs == decoded_instruction_in.rs1) begin
+        rd1 = executed_instruction_in.writeback_instruction.wbd;
+    end else if (writeback_instruction_in.valid && writeback_instruction_in.wbv &&
+                 writeback_instruction_in.wbs != 0 &&
+                 writeback_instruction_in.wbs == decoded_instruction_in.rs1) begin
+        rd1 = writeback_instruction_in.wbd;
+    end
+
+    if (executed_instruction_in.valid && executed_instruction_in.writeback_instruction.wbv &&
+        executed_instruction_in.writeback_instruction.wbs != 0 &&
+        executed_instruction_in.writeback_instruction.wbs == decoded_instruction_in.rs2) begin
+        rd2 = executed_instruction_in.writeback_instruction.wbd;
+    end else if (writeback_instruction_in.valid && writeback_instruction_in.wbv &&
+                 writeback_instruction_in.wbs != 0 &&
+                 writeback_instruction_in.wbs == decoded_instruction_in.rs2) begin
+        rd2 = writeback_instruction_in.writeback_instruction.wbd;
+    end
 
     exec_bypassed_rd1_comb = rd1;
     exec_bypassed_rd2_comb = rd2;
@@ -368,7 +360,6 @@ always @(*) begin
         decoded_instruction_in.f3,
         decoded_instruction_in.f7);
 
-    // "ground truth" for the next PC comes from this calculation.
     next_pc_comb = compute_next_pc(
         cast_to_ext_operand(rd1),
         exec_result_comb,
@@ -377,22 +368,24 @@ always @(*) begin
         decoded_instruction_in.op_q,
         decoded_instruction_in.f3);
 
-    pc_control_out = {($bits(pc_control_t)){1'b0}};
+    pc_control_out.fetch_mispredict = 1'b0;
+    pc_control_out.wrong_pc = 1'b0;
+    pc_control_out.correct_pc = 32'b0;
+
     pc_control_out.fetch_mispredict = false;
 
-    if (decoded_instruction_in.valid
-        && next_pc_comb != fetched_instruction_in.pc) begin
+    if (decoded_instruction_in.valid && next_pc_comb != fetched_instruction_in.pc) begin
         pc_control_out.fetch_mispredict = true;
         pc_control_out.correct_pc = next_pc_comb;
     end
 
-    if (decoded_instruction_in.valid
-        && decoded_instruction_in.pc != pc) begin
+    if (decoded_instruction_in.valid && decoded_instruction_in.pc != pc) begin
         pc_control_out.wrong_pc = true;
         pc_control_out.correct_pc = pc;
     end
 
 end
+
 
 
 always_ff @(posedge clk) begin
@@ -548,10 +541,6 @@ module control(
     ,input decoded_instruction_t decoded_instruction_in
     ,input executed_instruction_t executed_instruction_in
     ,input memory_instruction_t memory_instruction_in
-    ,input logic [4:0] rs1_id, rs2_id, rd_ex, rd_mem
-    ,input logic reg_write_ex, reg_write_mem
-    ,input logic branch_taken_ex
-    ,input logic predicted_not_taken
     ,output stage_signal_t  fetch_signal_out
     ,output stage_signal_t  decode_signal_out
     ,output stage_signal_t  execute_signal_out
@@ -561,26 +550,8 @@ module control(
     );
 
 import riscv::*;
-
+/*
 // Stall / Flush logic 
-logic stall, flush_pipeline;
-
-hazard_detection_unit hdu(
-    .rs1_id(rs1_id),
-    .rs2_id(rs2_id),
-    .rd_ex(rd_ex),
-    .rd_mem(rd_mem),
-    .reg_write_ex(reg_write_ex),
-    .reg_write_mem(reg_write_mem),
-    .stall(stall)
-);
-
-control_hazard_unit chu(
-    .branch_taken_ex(branch_taken_ex),
-    .predicted_not_taken(predicted_not_taken),
-    .flush_pipeline(flush_pipeline)
-    );
-
 always_comb begin
     // Start with everything running smooth
     fetch_signal_out.advance = true;
@@ -593,9 +564,43 @@ always_comb begin
     memory_signal_out.flush = false;
     fetch_set_pc_call_out.valid = false;
     // TODO: Manage hazards and branch mispredicts
+*/
 
+// DATA HAZARDS
+always_comb begin
+    bool load_use_hazard;
+    load_use_hazard = executed_instruction_in.valid &&
+                      executed_instruction_in.op_q == riscv::q_load &&
+                      ((executed_instruction_in.writeback_instruction.wbs == decoded_instruction_in.rs1 && decoded_instruction_in.rs1 != 0) ||
+                       (executed_instruction_in.writeback_instruction.wbs == decoded_instruction_in.rs2 && decoded_instruction_in.format != riscv::riscv_r_type));
 
+    if (load_use_hazard) begin
+        fetch_signal_out.advance = false;   // Stall Fetch
+        decode_signal_out.advance = false;   // Stall Decode
+        execute_signal_out.advance = true;   // Let Execute proceed
+    end else begin
+        fetch_signal_out.advance = true;
+        decode_signal_out.advance = true;
+        execute_signal_out.advance = true;
+    end
 end
+
+// CONTROL HAZARDS
+always_comb begin
+    if (pc_control_in.fetch_mispredict) begin
+        fetch_signal_out.flush  = true;
+        decode_signal_out.flush  = true;
+        execute_signal_out.flush  = true;
+
+        fetch_set_pc_call_out.valid = true;
+        fetch_set_pc_call_out.pc   = pc_control_in.correct_pc;
+    end else begin
+        fetch_signal_out.flush = false;
+        decode_signal_out.flush = false;
+        execute_signal_out.flush = false;
+    end
+end
+
 endmodule
 
 module core #(
