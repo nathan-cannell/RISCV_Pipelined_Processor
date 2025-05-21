@@ -1,1 +1,1 @@
-# RISCV_Multi_Cycle_Core
+# RISCV_Pipelined_Processor
