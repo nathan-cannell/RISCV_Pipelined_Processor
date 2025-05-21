@@ -18,7 +18,7 @@ This project demonstrates a classic RISC-V pipeline with hazard detection, forwa
 ---
 
 ## 📂 File Structure
-
+```
 /src/
 base.sv # Core type and parameter definitions
 system.sv # Instruction field decoders and helpers
@@ -31,7 +31,7 @@ execute.sv # ALU and branch execution stage
 memory.sv # Data memory access stage
 writeback.sv # Register file writeback stage
 control.sv # Pipeline control, hazard detection, and flush logic
-
+```
 
 ---
 
@@ -50,7 +50,7 @@ control.sv # Pipeline control, hazard detection, and flush logic
 ## ⚡ How to Use
 
 1. **Clone the repository**
-git clone https://github.com/your-username/riscv-pipeline-core.git
+git clone https://github.com/nathan-cannell/RISCV_Pipelined_Processor.git
 cd riscv-pipeline-core/src
 
 
@@ -66,7 +66,7 @@ cd riscv-pipeline-core/src
 ---
 
 ## 📝 Example: Top-Level Instantiation
-
+```
 module top;
 logic clk, reset;
 logic [31:0] reset_pc;
@@ -83,7 +83,7 @@ core u_core (
     .data_mem_rsp(data_mem_rsp)
 );
 endmodule
-
+```
 ---
 
 ## 📖 References
