@@ -18,6 +18,7 @@ This project demonstrates a classic RISC-V pipeline with hazard detection, forwa
 ---
 
 ## 📂 File Structure
+```
 riscv_core/
 ├── core.sv # Top-level module
 ├── control.sv # Pipeline control and hazard detection
@@ -34,6 +35,7 @@ riscv_core/
 └── utils/
 ├── base.sv # Core parameters and basic types
 ├── system.sv # Instruction field decoders
+```
 ---
 
 ## 🏗️ Pipeline Overview
