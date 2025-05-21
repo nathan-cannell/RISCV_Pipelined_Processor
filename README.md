@@ -18,21 +18,22 @@ This project demonstrates a classic RISC-V pipeline with hazard detection, forwa
 ---
 
 ## 📂 File Structure
-```
-/src/
-base.sv # Core type and parameter definitions
-system.sv # Instruction field decoders and helpers
-riscv32_common.sv # RISC-V opcode/type definitions and decode logic
-memory_io.sv # Memory interface structs and helpers
-core.sv # Top-level module connecting all pipeline stages
-fetch.sv # Instruction fetch stage
-decode.sv # Instruction decode and register file stage
-execute.sv # ALU and branch execution stage
-memory.sv # Data memory access stage
-writeback.sv # Register file writeback stage
-control.sv # Pipeline control, hazard detection, and flush logic
-```
-
+riscv_core/
+├── core.sv # Top-level module
+├── control.sv # Pipeline control and hazard detection
+├── riscv32_common.sv # Shared types and decode logic
+├── interfaces/
+│ ├── memory_io.sv # Memory interface definitions
+│ └── pipeline_ctrl.sv # Pipeline control signals
+├── stages/
+│ ├── fetch.sv # Instruction fetch stage
+│ ├── decode.sv # Decode and register file stage
+│ ├── execute.sv # ALU and branch execution
+│ ├── memory.sv # Data memory access stage
+│ └── writeback.sv # Register writeback stage
+└── utils/
+├── base.sv # Core parameters and basic types
+├── system.sv # Instruction field decoders
 ---
 
 ## 🏗️ Pipeline Overview
